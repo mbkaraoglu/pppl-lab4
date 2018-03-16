@@ -159,7 +159,7 @@ object Lab4 extends jsy.util.JsyApplication with Lab4Like {
           case _ => err(TUndefined, e1)
         }
         // Bind to env2 an environment that extends env1 with bindings for params.
-        val env2 = params.foldLeft(env1){(acc,p1) => acc + (p1._1 -> p1._2.t)}
+        val env2 = params.foldLeft(env1){(acc,param) => acc + (param._1 -> param._2.t)}
         val t1 = typeof(env2,e1)
         // Check with the possibly annotated return type
         tann match {
@@ -226,32 +226,37 @@ object Lab4 extends jsy.util.JsyApplication with Lab4Like {
 
   /* This should be the same code as from Lab 3 */
   def iterate(e0: Expr)(next: (Expr, Int) => Option[Expr]): Expr = {
-    def loop(e: Expr, n: Int): Expr = ???
+    def loop(e: Expr, n: Int): Expr = next(e,n) match {
+      case None => e
+      case Some(e2) => loop(e2, n + 1)
+    }
     loop(e0, 0)
   }
 
   /* Capture-avoiding substitution in e replacing variables x with esub. */
-  def substitute(e: Expr, esub: Expr, x: String): Expr = {
+  def substitute(e: Expr, esub: Expr, x: String): Expr = { //these were substitute instead of subst in lecture
     def subst(e: Expr): Expr = e match {
       case N(_) | B(_) | Undefined | S(_) => e
       case Print(e1) => Print(substitute(e1, esub, x))
         /***** Cases from Lab 3 */
-      case Unary(uop, e1) => Unary(uop,subst(e1))
-      case Binary(bop, e1, e2) => Binary(bop,subst(e1),subst(e2))
-      case If(e1, e2, e3) => If(subst(e1),subst(e2),subst(e3))
+      case Unary(uop, e1) => Unary(uop,substitute(e1, esub, x))
+      case Binary(bop, e1, e2) => Binary(bop,substitute(e1, esub, x),substitute(e2, esub, x))
+      case If(e1, e2, e3) => If(substitute(e1, esub, x),substitute(e2, esub, x),substitute(e3, esub, x))
       case Var(y) => if (x==y) esub else e
-      case Decl(mode, y, e1, e2) => Decl(mode,y,subst(e1),if (x==y) e2 else subst(e2))
+      case Decl(mode, y, e1, e2) => Decl(mode,y,substitute(e1, esub, x),if (x==y) e2 else substitute(e2, esub, x))
         /***** Cases needing adapting from Lab 3 */
-      case Function(p, params, tann, e1) =>
-        ???
-      case Call(e1, args) => Call(subst(e1),args map subst)
+      case Function(p, params, tann, e1) => {
+        if (params.exists((t1:(String,MTyp)) => t1._1 == x) || Some(x) == p) {e} else Function(p,params,tann,substitute(e1,esub,x))
+      }
+      case Call(e1, args) => Call(substitute(e1, esub, x),args map subst)
         /***** New cases for Lab 4 */
       case Obj(fields) => Obj(fields.mapValues(esub => subst(esub)))
-      case GetField(e1, f) => if (x!=f) GetField(subst(e1),f) else e
+      case GetField(e1, f) => if (x!=f) GetField(substitute(e1, esub, x),f) else e
     }
 
-    val fvs = freeVars(???)
-    def fresh(x: String): String = if (???) fresh(x + "$") else x
+    val fvs = freeVars(esub)
+    def fresh(x: String): String = if (fvs.contains(x)) fresh(x + "$") else x
+    //subst(rename(e)(fresh))
     subst(e)
   }
 
@@ -262,25 +267,31 @@ object Lab4 extends jsy.util.JsyApplication with Lab4Like {
         case N(_) | B(_) | Undefined | S(_) => e
         case Print(e1) => Print(ren(env, e1))
 
-        case Unary(uop, e1) => ???
-        case Binary(bop, e1, e2) => ???
+        case Unary(uop, e1) => Unary(uop,ren(env,e1))
+        case Binary(bop, e1, e2) => Binary(bop,ren(env,e1),ren(env,e2))
         case If(e1, e2, e3) => ???
 
         case Var(y) =>
-          ???
-        case Decl(mode, y, e1, e2) =>
+          if (env.contains(y)) Var(env(y)) else Var(y)
+        case Decl(mode, y, e1, e2) => {
           val yp = fresh(y)
-          ???
-
+          Decl(mode, yp, ren(env, e1), ren(env + (y -> yp), e2))
+        }
         case Function(p, params, retty, e1) => {
           val (pp, envp): (Option[String], Map[String,String]) = p match {
-            case None => ???
-            case Some(x) => ???
+            case None => (None,env)
+            case Some(x) => {
+              val pp = fresh(x)
+              (Some(pp),extend(env,x,pp))
+            }
           }
           val (paramsp, envpp) = params.foldRight( (Nil: List[(String,MTyp)], envp) ) {
-            ???
+            case ((s,t),(params,envp)) => {
+              val pfresh = fresh(s)
+              ((pfresh,t) :: params, extend(env,s,pfresh))
+            }
           }
-          ???
+          Function(pp,paramsp,retty,ren(envpp,e1))
         }
 
         case Call(e1, args) => ???
@@ -294,7 +305,7 @@ object Lab4 extends jsy.util.JsyApplication with Lab4Like {
 
   /* Check whether or not an expression is reduced enough to be applied given a mode. */
   def isRedex(mode: Mode, e: Expr): Boolean = mode match {
-    case MConst => ???
+    case MConst => if (isValue(e)) true else false
     case MName => ???
   }
 
@@ -310,26 +321,45 @@ object Lab4 extends jsy.util.JsyApplication with Lab4Like {
       case Binary(Plus,S(v1),S(v2)) => S(v1 + v2)
       case Binary(Plus,N(v1),N(v2)) => N(v1 + v2)
       case Binary(bop @ (Le|Ge|Gt|Lt), v1,v2) if isValue(v1) && isValue(v2)=> B(inequalityVal(bop,v1,v2))
+      case Binary(Ne,v1,v2) if isValue(v1) && isValue(v2) => B(v1!=v2)
+      case Binary(Eq,v1,v2) if isValue(v1) && isValue(v2) => B(v1==v2)
+      case Binary(And,B(v1),e2) => if (v1) e2 else B(false)
+      case Binary(Or,B(v1),e2) => if (v1) B(true) else e2
+      case Binary(Minus,N(v1),N(v2)) => N(v1 - v2)
+      case Binary(Times,N(v1),N(v2)) => N(v1 * v2)
+      case Binary(Div,N(v1),N(v2)) => N(v1 / v2)
+      case If(B(true),e2,e3) => e2
+      case If(B(false),e2,e3) => e3
+
+        //add redex later
+      case Decl(_,x,e1,e2) if isValue(e1) => substitute(e2,e1,x)
+
+      case GetField(Obj(fields),f) => fields.get(f) match {
+        case Some(e1) => e1
+        case None => throw StuckError(e)
+      }
 
         /***** More cases here */
       case Call(v1, args) if isValue(v1) =>
         v1 match {
           case Function(p, params, _, e1) => {
             val pazip = params zip args
-            if (???) {
+            if (args forall isValue) {
               val e1p = pazip.foldRight(e1) {
-                ???
+                case((p,a),e1) => substitute(e1,a,p._1)
               }
               p match {
-                case None => ???
-                case Some(x1) => ???
+                case None => e1p
+                case Some(x1) => substitute(e1,v1,x1)
               }
             }
-            else {
+            else { //step?
               val pazipp = mapFirst(pazip) {
-                ???
+                f => if(!isValue(f._2)) Some((f._1,step(f._2))) else None
               }
-              ???
+              //calling with function and args after stepping the args
+              Call(v1,pazipp.unzip._2)
+
             }
           }
           case _ => throw StuckError(e)
@@ -338,12 +368,22 @@ object Lab4 extends jsy.util.JsyApplication with Lab4Like {
 
       /* Inductive Cases: Search Rules */
       case Print(e1) => Print(step(e1))
+      case Unary(uop,e1) => Unary(uop,step(e1))
+      case Binary(bop,v1,e2) if isValue(v1) => Binary(bop,v1,step(e2))
+      case Binary(bop,e1,e2) => Binary(bop,step(e1),e2)
+      case If(e1,e2,e3) => If(step(e1),e2,e3)
+      case Decl(m,x,e1,e2) => Decl(m,x,step(e1),e2)
+
+      case GetField(e1,f) => GetField(step(e1),f)
+      case Obj(fields) => {
+        val list = mapFirst(fields.toList) {f => if(!isValue(f._2)) Some((f._1,step(f._2))) else None }
+        Obj(list.toMap)
+      }
         /***** Cases from Lab 3. */
-      case Unary(uop, e1) => ???
         /***** More cases here */
         /***** Cases needing adapting from Lab 3 */
-      case Call(v1 @ Function(_, _, _, _), args) => ???
-      case Call(e1, args) => ???
+      case Call(v1 @ Function(_, _, _, _), args) => Call(step(v1),args)
+      case Call(e1, args) => Call(step(e1),args)
         /***** New cases for Lab 4. */
 
       /* Everything else is a stuck error. Should not happen if e is well-typed.
